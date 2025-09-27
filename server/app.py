@@ -8,7 +8,6 @@ from flask_cors import CORS
 app = Flask(__name__)
 CORS(app)
 
-# Utility to read and return necessary data fresh for every request
 def load_data():
     books = pd.read_csv('Books.csv')
     ratings = pd.read_csv('Ratings.csv')

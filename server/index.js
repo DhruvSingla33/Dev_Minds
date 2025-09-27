@@ -36,16 +36,39 @@ const transporter = nodemailer.createTransport(sendgridTransport({
 const jwt = require("jsonwebtoken");
 
 const JWT_SECRET = process.env.JWT_SECRET;
+const axios = require("axios");
 
 
-// POST FOR POSTING
-// PUT FOR UPDATING
-// GET FOR FETCHING
-// DELETE FOR DELETING
-// PATCH = PUT BUT SPECIFIC UPDATE NOT EVERYTHING
-// HEAD = GET BUT FETCHES/REQUESTS ONLY HEADERS. NO CONTENT
-// TRACE = FOR DEBUGGING. GET TRACES
-// OPTIONS = PROVIDES WITH A MENU OF ACTIONS POSSIBLE WITH ALL THESE
+
+const url = `https://devminds-h21q.onrender.com/`;
+const url1='https://dev-minds-1.onrender.com/'
+const interval = 30000;
+
+function reloadWebsite() {
+  axios
+    .get(url)
+    .then((response) => {
+      console.log("website reloded");
+    })
+    .catch((error) => {
+      console.error(`Error : ${error.message}`);
+    });
+}
+
+setInterval(reloadWebsite, interval);
+
+function reloadWebsite1() {
+  axios
+    .get(url)
+    .then((response) => {
+      console.log("website reloded");
+    })
+    .catch((error) => {
+      console.error(`Error : ${error.message}`);
+    });
+}
+
+setInterval(reloadWebsite1, interval);
 
 const app = express();
 app.set("view engine", "ejs");
