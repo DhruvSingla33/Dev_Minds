@@ -3,14 +3,17 @@ const mongoose = require("mongoose");
 const express = require("express");
 const connectDB = require("./connectDB");
 const Book = require("./models/Books");
-
+const crypto = require('crypto');
 const storage = require('./Cloudinary/index');
-
+const OTP_EXPIRES_MINUTES = parseInt(process.env.OTP_EXPIRES_MINUTES || '10');
+const OTP_RESEND_COOLDOWN_SECONDS = parseInt(process.env.OTP_RESEND_COOLDOWN_SECONDS || '60');
+const OTP_MAX_ATTEMPTS = parseInt(process.env.OTP_MAX_ATTEMPTS || '5');
 const fs = require('fs');
 const csv = require('csv-parser');
 const cors = require('cors');
 const cosineSimilarity = require('ml-distance').similarity.cosine;
-
+const EmailOtp = require('./models/EmailOtp');
+const User1= require('./models/User');
 const Movie = require("./models/Movie");
 const Message = require("./models/Message");
 const Chat = require("./models/Chat");
@@ -103,7 +106,6 @@ async function loadData() {
     return book ? { ...r, book_title: book.book_title } : null;
   }).filter(Boolean);
 
-  // Pivot table creation
   const pt = {};
   ratingsWithName.forEach(r => {
     const user = r.UserId;
@@ -116,7 +118,6 @@ async function loadData() {
   const bookTitles = Object.keys(pt);
   const users = [...new Set(ratingsWithName.map(r => r.UserId))];
 
-  // Create matrix
   const matrix = bookTitles.map(title => {
     return users.map(user => pt[title][user] || 0);
   });
@@ -144,7 +145,6 @@ async function loadDataFromMongo() {
   });
   
 
-    // Pivot table creation
   const pt = {};
   ratingsWithName.forEach(r => {
     const user = r.UserId;
@@ -197,6 +197,135 @@ app.get('/recommend', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+
+function generateOtp() {
+  return crypto.randomInt(100000, 1000000).toString(); 
+}
+function hashCode(code) {
+  return crypto.createHash("sha256").update(code).digest("hex");
+}
+app.post("/api/send-otp-email", async (req, res) => {
+  try {
+    const { email } = req.body;
+    if (!email) return res.status(400).json({ success: false, message: "Email required" });
+
+    const code = generateOtp();
+    const codeHash = hashCode(code);
+    const expiresAt = new Date(Date.now() + OTP_EXPIRES_MINUTES * 60 * 1000);
+    await EmailOtp.create({ email, codeHash, expiresAt });
+
+    await transporter.sendMail({
+      from: 'singlayogita0@gmail.com',
+      to: email,
+      subject: "Your verification code",
+      text: `Your verification code is ${code}. It will expire in ${OTP_EXPIRES_MINUTES} minutes.`,
+    });
+
+    return res.json({ success: true, message: "OTP sent to email" });
+  } catch (err) {
+    console.error("sendOtpEmail error:", err);
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+});
+app.post("/api/verify-otp-email", async (req, res) => {
+  try {
+    const { email, code } = req.body;
+    if (!email || !code) return res.status(400).json({ success: false, message: "Email and code required" });
+
+    // Find the most recent OTP for this email
+    const otpDoc = await EmailOtp.findOne({ email }).sort({ createdAt: -1 }).exec();
+    if (!otpDoc) return res.status(400).json({ success: false, message: "No OTP found for this email" });
+
+    // Expiry check
+    if (otpDoc.expiresAt < new Date()) {
+      // remove expired doc
+      await EmailOtp.deleteMany({ email });
+      return res.status(400).json({ success: false, message: "OTP expired" });
+    }
+
+    // Attempts check
+    if (otpDoc.attempts >= OTP_MAX_ATTEMPTS) {
+      await EmailOtp.deleteMany({ email });
+      return res.status(429).json({ success: false, message: "Too many attempts" });
+    }
+
+    const codeHash = hashCode(code);
+    if (codeHash !== otpDoc.codeHash) {
+      otpDoc.attempts = (otpDoc.attempts || 0) + 1;
+      await otpDoc.save();
+      const attemptsLeft = Math.max(OTP_MAX_ATTEMPTS - otpDoc.attempts, 0);
+      return res.status(400).json({ success: false, message: "Invalid code", attemptsLeft });
+    }
+
+    // Verified: remove all OTPs for that email
+    await EmailOtp.deleteMany({ email });
+
+    return res.json({ success: true, verified: true });
+  } catch (err) {
+    console.error("verifyOtpEmail error:", err);
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+});
+app.post("/api/register-email", async (req, res) => {
+  try {
+    const { email, name, firstName, lastName, address } = req.body;
+    if (!email) {
+      return res.status(400).json({ success: false, message: "Email is required" });
+    }
+
+    let user = await User1.findOne({ email }).exec();
+    console.log(user);
+    if (user && user.verified) {
+      return res.json({
+        success: false,
+        message: "This email is already verified and registered.",
+        user,
+      });
+    }
+
+    if (user) {
+      user.firstName = firstName || user.firstName;
+      user.lastName = lastName || user.lastName;
+      user.address = address || user.address;
+      user.name = name || user.name;
+      user.verified = true;
+      await user.save();
+    } else {
+      user = new User1({ email, name, firstName, lastName, address, verified: true });
+      await user.save();
+    }
+
+    return res.json({ success: true, message: "User registered successfully", user });
+  } catch (err) {
+    console.error("registerUser error:", err);
+    return res.status(500).json({ success: false, message: "Server error", error: err.message });
+  }
+});
+
+app.get("/api/check-user", async (req, res) => {
+  try {
+    const { email } = req.query;
+    console.log("hii");
+    if (!email)
+      return res.status(400).json({ success: false, message: "Email required" });
+
+    let user = await User1.findOne({ email }).exec();
+    console.log(user);
+    if (!user) return res.json({ success: true, exists: false });
+
+    return res.json({
+      success: true,
+      exists: true,
+      verified: user.verified,
+      user,
+    });
+  } catch (err) {
+    console.error("check-user error:", err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+});
+
 
 
 app.get('/recommend1', async (req, res) => {
@@ -765,11 +894,9 @@ app.get('/api/issued/:id', async (req, res) => {
 
     const user = data.userId;
     const book = data.bookId;
-
-    // ✅ Construct dynamic email content
     const mailOptions = {
-      from: 'singladhruv301@gmail.com', // Your verified SendGrid sender
-      to: user.email, // Recipient's email
+      from: 'singladhruv301@gmail.com',
+      to: user.email, 
       subject: 'Book Issued - Please Collect It 📚',
       text: `Hi ${user.fname}, your book "${book.title}" is issued successfully. Please come and collect the book.`,
       html: `
@@ -782,7 +909,6 @@ app.get('/api/issued/:id', async (req, res) => {
       `
     };
 
-    // ✅ Send the email
     transporter.sendMail(mailOptions, (error, info) => {
       if (error) {
         console.error("Error sending email:", error);
@@ -791,7 +917,6 @@ app.get('/api/issued/:id', async (req, res) => {
       }
     });
 
-    // ✅ Update status to "done"
     await User.findOneAndUpdate(
       { _id: user._id, 'issuedBooks.bookId': book._id },
       { $set: { 'issuedBooks.$.status': 'done' } },
